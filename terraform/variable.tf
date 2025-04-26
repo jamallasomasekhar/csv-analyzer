@@ -39,3 +39,9 @@ variable "project_name" {
   default     = "csv-analyzer"
   
 }
+variable "private_key_path" {
+  description = "Path to the private key for SSH access"
+  type        = string
+  default     = "/Users/somasekharjamalla/Downloads/ssh-key.pem"
+  
+}
