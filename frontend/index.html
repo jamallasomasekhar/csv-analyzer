@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CSV Student Grade Analyzer</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            padding-top: 2rem;
+            background-color: #f8f9fa;
+        }
+        .form-container {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            padding: 2rem;
+            margin-bottom: 2rem;
+        }
+        .results-container {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            padding: 2rem;
+        }
+        .s3-info-container {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            padding: 2rem;
+            margin-top: 2rem;
+        }
+        .loader {
+            border: 5px solid #f3f3f3;
+            border-radius: 50%;
+            border-top: 5px solid #007bff;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+            display: none;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .table-container {
+            overflow-x: auto;
+        }
+        .success-message {
+            color: #155724;
+            background-color: #d4edda;
+            border-color: #c3e6cb;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            border-radius: 4px;
+            display: none;
+        }
+        .error-message {
+            color: #721c24;
+            background-color: #f8d7da;
+            border-color: #f5c6cb;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            border-radius: 4px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="text-center mb-4">CSV Student Grade Analyzer</h1>
+        
+        <div class="row">
+            <div class="col-md-12">
+                <div class="form-container">
+                    <h2>Upload CSV File</h2>
+                    <p>Upload a CSV file with columns: name, age, grade</p>
+                    
+                    <div class="success-message" id="successMessage"></div>
+                    <div class="error-message" id="errorMessage"></div>
+                    
+                    <form id="csvUploadForm">
+                        <div class="mb-3">
+                            <label for="csvFile" class="form-label">CSV File</label>
+                            <input class="form-control" type="file" id="csvFile" accept=".csv" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="threshold" class="form-label">Grade Threshold</label>
+                            <input type="number" class="form-control" id="threshold" value="75" min="0" max="100" required>
+                            <div class="form-text">Show students with grades above this threshold</div>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Analyze</button>
+                    </form>
+                    
+                    <div class="loader" id="loader"></div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="row">
+            <div class="col-md-12">
+                <div class="results-container" id="resultsContainer" style="display: none;">
+                    <h2>Analysis Results</h2>
+                    <div class="mb-3">
+                        <p>Threshold: <span class="fw-bold" id="thresholdResult"></span></p>
+                        <p>Total Students: <span class="fw-bold" id="totalStudents"></span></p>
+                        <p>Students Above Threshold: <span class="fw-bold" id="studentsAboveThreshold"></span></p>
+                    </div>
+                    
+                    <div class="table-container">
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Age</th>
+                                    <th>Grade</th>
+                                </tr>
+                            </thead>
+                            <tbody id="resultsTable">
+                                <!-- Results will be inserted here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="row">
+            <div class="col-md-12">
+                <div class="s3-info-container">
+                    <h2>S3 Bucket Information</h2>
+                    <button class="btn btn-secondary mb-3" id="loadS3Info">Load S3 Info</button>
+                    
+                    <div id="s3InfoResults" style="display: none;">
+                        <div class="mb-3">
+                            <h4>Available Buckets</h4>
+                            <p>Total Buckets: <span class="fw-bold" id="totalBuckets"></span></p>
+                            <select class="form-select" id="bucketSelect">
+                                <option value="">Select a bucket</option>
+                            </select>
+                        </div>
+                        
+                        <div id="bucketStatsContainer" style="display: none;">
+                            <h4>Selected Bucket Statistics</h4>
+                            <p>Bucket Name: <span class="fw-bold" id="bucketName"></span></p>
+                            <p>Object Count: <span class="fw-bold" id="objectCount"></span></p>
+                            <p>Total Size: <span class="fw-bold" id="totalSize"></span> MB</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <footer class="mt-5 mb-3 text-center text-muted">
+            <p>CSV Analyzer - Demo AWS Application</p>
+        </footer>
+    </div>
+
+    <script>
+        // Backend API URL - update this to your EC2 instance's public IP or domain
+        const API_URL = 'http://BACKEND_SERVER_IP'; // This will be replaced by GitHub Actions
+        
+        document.addEventListener('DOMContentLoaded', function() {
+            const csvForm = document.getElementById('csvUploadForm');
+            const loadS3InfoBtn = document.getElementById('loadS3Info');
+            const bucketSelect = document.getElementById('bucketSelect');
+            
+            // Handle CSV form submission
+            csvForm.addEventListener('submit', function(e) {
+                e.preventDefault();
+                
+                const csvFile = document.getElementById('csvFile').files[0];
+                const threshold = document.getElementById('threshold').value;
+                
+                if (!csvFile) {
+                    showError('Please select a CSV file');
+                    return;
+                }
+                
+                const formData = new FormData();
+                formData.append('file', csvFile);
+                formData.append('threshold', threshold);
+                
+// Show loader
+document.getElementById('loader').style.display = 'block';
+                document.getElementById('resultsContainer').style.display = 'none';
+                document.getElementById('successMessage').style.display = 'none';
+                document.getElementById('errorMessage').style.display = 'none';
+                
+                // Send request to backend
+                fetch(`${API_URL}/analyze`, {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    // Hide loader
+                    document.getElementById('loader').style.display = 'none';
+                    
+                    if (data.error) {
+                        showError(`Error: ${data.error}`);
+                        return;
+                    }
+                    
+                    // Display success message
+                    showSuccess(`Analysis completed successfully!`);
+                    
+                    // Display results
+                    document.getElementById('thresholdResult').textContent = data.threshold;
+                    document.getElementById('totalStudents').textContent = data.total_students;
+                    document.getElementById('studentsAboveThreshold').textContent = data.students_above_threshold;
+                    
+                    // Clear previous results
+                    const resultsTable = document.getElementById('resultsTable');
+                    resultsTable.innerHTML = '';
+                    
+                    // Add student rows
+                    data.students.forEach(student => {
+                        const row = document.createElement('tr');
+                        
+                        const nameCell = document.createElement('td');
+                        nameCell.textContent = student.name;
+                        row.appendChild(nameCell);
+                        
+                        const ageCell = document.createElement('td');
+                        ageCell.textContent = student.age;
+                        row.appendChild(ageCell);
+                        
+                        const gradeCell = document.createElement('td');
+                        gradeCell.textContent = student.grade;
+                        row.appendChild(gradeCell);
+                        
+                        resultsTable.appendChild(row);
+                    });
+                    
+                    // Show results container
+                    document.getElementById('resultsContainer').style.display = 'block';
+                })
+                .catch(error => {
+                    // Hide loader
+                    document.getElementById('loader').style.display = 'none';
+                    showError(`Error: ${error.message}`);
+                });
+            });
+            
+            // Handle Load S3 Info button click
+            loadS3InfoBtn.addEventListener('click', function() {
+                // Show loader
+                document.getElementById('loader').style.display = 'block';
+                document.getElementById('s3InfoResults').style.display = 'none';
+                document.getElementById('successMessage').style.display = 'none';
+                document.getElementById('errorMessage').style.display = 'none';
+                
+                // Send request to backend
+                fetch(`${API_URL}/s3info`)
+                .then(response => response.json())
+                .then(data => {
+                    // Hide loader
+                    document.getElementById('loader').style.display = 'none';
+                    
+                    if (data.error) {
+                        showError(`Error: ${data.error}`);
+                        return;
+                    }
+                    
+                    // Display bucket count
+                    document.getElementById('totalBuckets').textContent = data.bucket_count;
+                    
+                    // Clear previous bucket options
+                    const bucketSelect = document.getElementById('bucketSelect');
+                    bucketSelect.innerHTML = '<option value="">Select a bucket</option>';
+                    
+                    // Add bucket options
+                    data.buckets.forEach(bucket => {
+                        const option = document.createElement('option');
+                        option.value = bucket;
+                        option.textContent = bucket;
+                        bucketSelect.appendChild(option);
+                    });
+                    
+                    // Show selected bucket stats if available
+                    if (data.selected_bucket_stats) {
+                        displayBucketStats(data.selected_bucket_stats);
+                    }
+                    
+                    // Show results
+                    document.getElementById('s3InfoResults').style.display = 'block';
+                })
+                .catch(error => {
+                    // Hide loader
+                    document.getElementById('loader').style.display = 'none';
+                    showError(`Error: ${error.message}`);
+                });
+            });
+            
+            // Handle bucket selection change
+            bucketSelect.addEventListener('change', function() {
+                const selectedBucket = this.value;
+                
+                if (!selectedBucket) {
+                    document.getElementById('bucketStatsContainer').style.display = 'none';
+                    return;
+                }
+                
+                // Show loader
+                document.getElementById('loader').style.display = 'block';
+                document.getElementById('bucketStatsContainer').style.display = 'none';
+                
+                // Send request to backend
+                fetch(`${API_URL}/s3info?bucket=${selectedBucket}`)
+                .then(response => response.json())
+                .then(data => {
+                    // Hide loader
+                    document.getElementById('loader').style.display = 'none';
+                    
+                    if (data.error) {
+                        showError(`Error: ${data.error}`);
+                        return;
+                    }
+                    
+                    // Display bucket stats
+                    if (data.selected_bucket_stats) {
+                        displayBucketStats(data.selected_bucket_stats);
+                    }
+                })
+                .catch(error => {
+                    // Hide loader
+                    document.getElementById('loader').style.display = 'none';
+                    showError(`Error: ${error.message}`);
+                });
+            });
+            
+            // Helper function to display bucket stats
+            function displayBucketStats(stats) {
+                document.getElementById('bucketName').textContent = stats.name;
+                document.getElementById('objectCount').textContent = stats.object_count;
+                document.getElementById('totalSize').textContent = stats.total_size_mb;
+                document.getElementById('bucketStatsContainer').style.display = 'block';
+            }
+            
+            // Helper function to show success message
+            function showSuccess(message) {
+                const successElement = document.getElementById('successMessage');
+                successElement.textContent = message;
+                successElement.style.display = 'block';
+            }
+            
+            // Helper function to show error message
+            function showError(message) {
+                const errorElement = document.getElementById('errorMessage');
+                errorElement.textContent = message;
+                errorElement.style.display = 'block';
+            }
+        });
+    </script>
+</body>
+</html>
