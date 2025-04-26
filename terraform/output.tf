@@ -17,3 +17,8 @@ output "backend_server_public_dns" {
   description = "Public DNS name of the backend EC2 instance"
   value       = aws_instance.backend_server.public_dns
 }
+
+output "lambda_function_name" {
+  description = "Name of the Lambda function"
+  value       = aws_lambda_function.s3_analyzer.function_name
+}

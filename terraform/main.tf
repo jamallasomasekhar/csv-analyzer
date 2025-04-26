@@ -430,3 +430,164 @@ resource "aws_instance" "backend_server" {
     Name = "${var.project_name}-backend-server"
   }
 }
+
+# IAM policy for Lambda
+resource "aws_iam_policy" "lambda_policy" {
+  name        = "${var.project_name}-lambda-policy"
+  description = "Policy for Lambda to access S3 and CloudWatch"
+  
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Effect   = "Allow"
+        Resource = "arn:aws:logs:*:*:*"
+      },
+      {
+        Action = [
+          "s3:ListBucket",
+          "s3:GetObject",
+          "s3:ListAllMyBuckets"
+        ]
+        Effect   = "Allow"
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# Attach policy to Lambda role
+resource "aws_iam_role_policy_attachment" "lambda_policy_attachment" {
+  role       = aws_iam_role.lambda_role.name
+  policy_arn = aws_iam_policy.lambda_policy.arn
+}
+
+# Create Lambda function zip file from code
+data "archive_file" "lambda_zip" {
+  type        = "zip"
+  output_path = "${path.module}/lambda_function.zip"
+  
+  source {
+    content = <<-EOF
+      import json
+      import boto3
+      import logging
+
+      # Configure logging
+      logger = logging.getLogger()
+      logger.setLevel(logging.INFO)
+
+      def lambda_handler(event, context):
+          logger.info('Starting S3 bucket analysis')
+          
+          try:
+              # Create S3 client
+              s3_client = boto3.client('s3')
+              
+              # List all buckets
+              response = s3_client.list_buckets()
+              buckets = [bucket['Name'] for bucket in response['Buckets']]
+              logger.info(f'Found {len(buckets)} S3 buckets: {buckets}')
+              
+              # Get bucket from event or use default
+              target_bucket = event.get('bucket_name') if event else None
+              
+              if not target_bucket and len(buckets) > 0:
+                  target_bucket = buckets[0]
+                  logger.info(f'No bucket specified, using first bucket: {target_bucket}')
+              
+              bucket_stats = None
+              if target_bucket:
+                  # Count objects in the specified bucket
+                  paginator = s3_client.get_paginator('list_objects_v2')
+                  total_objects = 0
+                  total_size = 0
+                  
+                  for page in paginator.paginate(Bucket=target_bucket):
+                      if 'Contents' in page:
+                          total_objects += len(page['Contents'])
+                          total_size += sum(obj['Size'] for obj in page['Contents'])
+                  
+                  bucket_stats = {
+                      "name": target_bucket,
+                      "object_count": total_objects,
+                      "total_size_bytes": total_size,
+                      "total_size_mb": round(total_size / (1024 * 1024), 2)
+                  }
+                  
+                  logger.info(f'Bucket stats for {target_bucket}: {bucket_stats}')
+              
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({
+                      'message': 'S3 analysis completed successfully',
+                      'bucket_count': len(buckets),
+                      'buckets': buckets,
+                      'selected_bucket_stats': bucket_stats
+                  })
+              }
+              
+          except Exception as e:
+              error_message = str(e)
+              logger.error(f'Error analyzing S3 buckets: {error_message}')
+              
+              return {
+                  'statusCode': 500,
+                  'body': json.dumps({
+                      'message': 'Error analyzing S3 buckets',
+                      'error': error_message
+                  })
+              }
+    EOF
+    filename = "lambda_function.py"
+  }
+}
+
+# Create Lambda function
+resource "aws_lambda_function" "s3_analyzer" {
+  filename         = data.archive_file.lambda_zip.output_path
+  function_name    = "${var.project_name}-s3-analyzer"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "lambda_function.lambda_handler"
+  runtime          = "python3.9"
+  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  timeout          = 30
+  
+  environment {
+    variables = {
+      FRONTEND_BUCKET = aws_s3_bucket.frontend_bucket.id
+    }
+  }
+  
+  tags = {
+    Name = "${var.project_name}-s3-analyzer"
+  }
+}
+
+# Create CloudWatch event rule to trigger Lambda function periodically (optional)
+resource "aws_cloudwatch_event_rule" "lambda_schedule" {
+  name                = "${var.project_name}-lambda-schedule"
+  description         = "Schedule for S3 analyzer Lambda function"
+  schedule_expression = "rate(1 day)"
+}
+
+# Set Lambda as target for CloudWatch event
+resource "aws_cloudwatch_event_target" "lambda_target" {
+  rule      = aws_cloudwatch_event_rule.lambda_schedule.name
+  target_id = "LambdaFunction"
+  arn       = aws_lambda_function.s3_analyzer.arn
+}
+
+# Permission for CloudWatch to invoke Lambda
+resource "aws_lambda_permission" "allow_cloudwatch" {
+  statement_id  = "AllowExecutionFromCloudWatch"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.s3_analyzer.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.lambda_schedule.arn
+}
